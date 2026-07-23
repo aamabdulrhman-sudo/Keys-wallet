@@ -49,6 +49,15 @@
         </a>
         <div class="navbar-nav ms-auto align-items-center gap-3">
             <a class="nav-link" href="{{ url_for('dashboard') }}"><i class="bi bi-grid me-1"></i> لوحة التحكم</a>
+            <a class="nav-link position-relative" href="{{ url_for('admin_update_page') }}">
+                <i class="bi bi-cloud-download me-1"></i> التحديث
+                {% if update_available %}
+                <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill" style="background: linear-gradient(135deg, #22c55e, #16a34a); font-size: 0.6rem; padding: 0.3em 0.6em;">
+                    <i class="bi bi-arrow-up-circle"></i>
+                </span>
+                {% endif %}
+            </a>
+            <span class="nav-link" style="font-size: 0.8rem; color: #64748b;"><i class="bi bi-tag me-1"></i> v{{ local_version }}</span>
             <span class="nav-link"><i class="bi bi-person-circle me-1"></i> {{ current_user.username }}</span>
             <span class="badge-admin"><i class="bi bi-shield-check me-1"></i> مدير</span>
             <a class="btn btn-outline-light btn-sm px-3" href="{{ url_for('logout') }}">

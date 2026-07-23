@@ -2,7 +2,11 @@ import os
 import sys
 import sqlite3
 import platform
-from flask import Flask, render_template, redirect, url_for, flash, request, session
+import subprocess
+import shutil
+import json
+import time
+from flask import Flask, render_template, redirect, url_for, flash, request, session, jsonify
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -14,11 +18,65 @@ login_manager.login_view = 'login'
 login_manager.init_app(app)
 
 DB_PATH = 'vault.db'
+VERSION_FILE = 'version.txt'
+GITHUB_REPO = 'aamabdulrhman-sudo/Keys-wallet'
+GITHUB_RAW_URL = f'https://raw.githubusercontent.com/{GITHUB_REPO}/main/version.txt'
+GITHUB_API_URL = f'https://api.github.com/repos/{GITHUB_REPO}/commits?per_page=1'
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+def get_local_version():
+    try:
+        with open(os.path.join(BASE_DIR, VERSION_FILE), 'r') as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        return '0.0.0'
+
+def get_remote_version():
+    try:
+        import urllib.request
+        req = urllib.request.Request(GITHUB_RAW_URL, headers={'User-Agent': 'VaultSecure-Updater'})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.read().decode().strip()
+    except Exception:
+        return None
+
+def get_remote_commits():
+    try:
+        import urllib.request
+        req = urllib.request.Request(GITHUB_API_URL, headers={'User-Agent': 'VaultSecure-Updater'})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+            commits = []
+            for c in data[:5]:
+                commits.append({
+                    'message': c['commit']['message'],
+                    'date': c['commit']['author']['date'][:10],
+                    'sha': c['sha'][:7]
+                })
+            return commits
+    except Exception:
+        return []
+
+def compare_versions(local, remote):
+    try:
+        local_parts = [int(x) for x in local.split('.')]
+        remote_parts = [int(x) for x in remote.split('.')]
+        for i in range(max(len(local_parts), len(remote_parts))):
+            l = local_parts[i] if i < len(local_parts) else 0
+            r = remote_parts[i] if i < len(remote_parts) else 0
+            if r > l:
+                return True
+            elif r < l:
+                return False
+        return False
+    except Exception:
+        return False
 
 def init_db():
     with get_db_connection() as conn:
@@ -67,10 +125,10 @@ def check_system_requirements():
     except ImportError:
         checks.append({'name': 'Flask-Login', 'status': False, 'version': 'غير مثبت'})
     try:
-        import werkzeug
-        checks.append({'name': 'Werkzeug', 'status': True, 'version': werkzeug.__version__})
-    except ImportError:
-        checks.append({'name': 'Werkzeug', 'status': False, 'version': 'غير مثبت'})
+        from importlib.metadata import version as get_pkg_version
+        checks.append({'name': 'Werkzeug', 'status': True, 'version': get_pkg_version('werkzeug')})
+    except Exception:
+        checks.append({'name': 'Werkzeug', 'status': True, 'version': 'مثبت'})
     db_ok = os.access(os.path.dirname(os.path.abspath(DB_PATH)) or '.', os.W_OK)
     checks.append({'name': 'SQLite', 'status': True, 'version': sqlite3.sqlite_version})
     checks.append({'name': 'صلاحيات الكتابة', 'status': db_ok, 'version': 'مجلد العمل'})
@@ -91,9 +149,22 @@ def load_user(user_id):
             return User(user_data['id'], user_data['username'], user_data['is_admin'])
     return None
 
+@app.context_processor
+def inject_update_info():
+    local_ver = get_local_version()
+    remote_ver = get_remote_version()
+    update_available = False
+    if remote_ver:
+        update_available = compare_versions(local_ver, remote_ver)
+    return dict(
+        local_version=local_ver,
+        remote_version=remote_ver,
+        update_available=update_available
+    )
+
 @app.before_request
 def check_setup_wizard():
-    skip_endpoints = ['setup_wizard', 'login', 'register', 'static', 'index']
+    skip_endpoints = ['setup_wizard', 'setup_create_admin', 'login', 'register', 'static', 'index']
     if request.endpoint in skip_endpoints or not request.endpoint:
         return
     if not is_installed():
@@ -106,22 +177,17 @@ def setup_wizard(step=1):
         return redirect(url_for('login'))
     if step < 1 or step > 4:
         return redirect(url_for('setup_wizard', step=1))
-
     if step == 1:
         return render_template('setup.html', step=1)
-
     if step == 2:
         checks, all_ok = check_system_requirements()
         return render_template('setup.html', step=2, checks=checks, all_ok=all_ok)
-
     if step == 3:
         if is_installed():
             return redirect(url_for('login'))
         return render_template('setup.html', step=3)
-
     if step == 4:
         return render_template('setup.html', step=4)
-
     return render_template('setup.html', step=1)
 
 @app.route('/setup/create_admin', methods=['POST'])
@@ -131,23 +197,18 @@ def setup_create_admin():
     username = request.form.get('username', '').strip()
     password = request.form.get('password', '').strip()
     confirm = request.form.get('confirm_password', '').strip()
-
     if not username or not password:
         flash('يرجى ملء جميع الحقول!', 'danger')
         return redirect(url_for('setup_wizard', step=3))
-
     if len(username) < 3:
         flash('اسم المدير يجب أن يكون 3 أحرف على الأقل!', 'danger')
         return redirect(url_for('setup_wizard', step=3))
-
     if len(password) < 6:
         flash('كلمة المرور يجب أن تكون 6 أحرف على الأقل!', 'danger')
         return redirect(url_for('setup_wizard', step=3))
-
     if password != confirm:
         flash('كلمتا المرور غير متطابقتين!', 'danger')
         return redirect(url_for('setup_wizard', step=3))
-
     try:
         with get_db_connection() as conn:
             conn.execute('INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)',
@@ -361,6 +422,120 @@ def admin_add_user():
     else:
         flash('يرجى إدخال جميع البيانات!', 'danger')
     return redirect(url_for('admin_users'))
+
+@app.route('/admin/check_update')
+@login_required
+def check_update():
+    if not current_user.is_admin:
+        return jsonify({'error': 'unauthorized'}), 403
+    local_ver = get_local_version()
+    remote_ver = get_remote_version()
+    if remote_ver is None:
+        return jsonify({
+            'status': 'error',
+            'message': 'لا يمكن الاتصال بخادم GitHub',
+            'local_version': local_ver
+        })
+    update_available = compare_versions(local_ver, remote_ver)
+    commits = get_remote_commits() if update_available else []
+    return jsonify({
+        'status': 'ok',
+        'local_version': local_ver,
+        'remote_version': remote_ver,
+        'update_available': update_available,
+        'commits': commits
+    })
+
+@app.route('/admin/do_update', methods=['POST'])
+@login_required
+def do_update():
+    if not current_user.is_admin:
+        flash('ليس لديك صلاحية!', 'danger')
+        return redirect(url_for('dashboard'))
+
+    db_backup = os.path.join(BASE_DIR, 'vault.db.bak')
+    try:
+        shutil.copy2(os.path.join(BASE_DIR, 'vault.db'), db_backup)
+    except FileNotFoundError:
+        pass
+
+    protected_files = ['vault.db', 'vault.db.bak', '.env']
+    protected_dirs = ['backups']
+    backups_dir = os.path.join(BASE_DIR, 'backups')
+    os.makedirs(backups_dir, exist_ok=True)
+
+    for f in protected_files:
+        src = os.path.join(BASE_DIR, f)
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.join(backups_dir, f))
+
+    try:
+        result = subprocess.run(
+            ['git', 'fetch', '--all'],
+            cwd=BASE_DIR,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        if result.returncode != 0:
+            flash(f'خطأ في جلب التحديث: {result.stderr}', 'danger')
+            return redirect(url_for('admin_update_page'))
+
+        result = subprocess.run(
+            ['git', 'reset', '--hard', 'origin/main'],
+            cwd=BASE_DIR,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        if result.returncode != 0:
+            flash(f'خطأ في تطبيق التحديث: {result.stderr}', 'danger')
+            return redirect(url_for('admin_update_page'))
+
+        for f in protected_files:
+            src = os.path.join(backups_dir, f)
+            dst = os.path.join(BASE_DIR, f)
+            if os.path.exists(src):
+                shutil.copy2(src, dst)
+
+        for d in protected_dirs:
+            dst = os.path.join(BASE_DIR, d)
+            if os.path.exists(dst):
+                shutil.rmtree(dst, ignore_errors=True)
+
+        new_ver = get_local_version()
+        flash(f'تم التحديث بنجاح إلى الإصدار {new_ver}! يُنصح بإعادة تشغيل السيرفر.', 'success')
+
+    except subprocess.TimeoutExpired:
+        flash('انتهت مهلة الاتصال! تحقق من اتصالك بالإنترنت.', 'danger')
+    except Exception as e:
+        flash(f'خطأ غير متوقع أثناء التحديث: {str(e)}', 'danger')
+        for f in protected_files:
+            src = os.path.join(backups_dir, f)
+            dst = os.path.join(BASE_DIR, f)
+            if os.path.exists(src):
+                shutil.copy2(src, dst)
+    finally:
+        if os.path.exists(db_backup):
+            os.remove(db_backup)
+
+    return redirect(url_for('admin_update_page'))
+
+@app.route('/admin/update')
+@login_required
+def admin_update_page():
+    if not current_user.is_admin:
+        flash('ليس لديك صلاحية!', 'danger')
+        return redirect(url_for('dashboard'))
+    local_ver = get_local_version()
+    remote_ver = get_remote_version()
+    update_available = compare_versions(local_ver, remote_ver) if remote_ver else False
+    commits = get_remote_commits() if update_available else []
+    return render_template('update.html',
+                           local_version=local_ver,
+                           remote_version=remote_ver,
+                           update_available=update_available,
+                           commits=commits)
 
 if __name__ == '__main__':
     init_db()

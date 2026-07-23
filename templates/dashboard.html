@@ -61,7 +61,16 @@
             <a class="nav-link active" href="{{ url_for('dashboard') }}"><i class="bi bi-grid me-1"></i> لوحة التحكم</a>
             {% if current_user.is_admin %}
             <a class="nav-link" href="{{ url_for('admin_users') }}"><i class="bi bi-people me-1"></i> إدارة المستخدمين</a>
+            <a class="nav-link position-relative" href="{{ url_for('admin_update_page') }}">
+                <i class="bi bi-cloud-download me-1"></i> التحديث
+                {% if update_available %}
+                <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill" style="background: linear-gradient(135deg, #22c55e, #16a34a); font-size: 0.6rem; padding: 0.3em 0.6em;">
+                    <i class="bi bi-arrow-up-circle"></i>
+                </span>
+                {% endif %}
+            </a>
             {% endif %}
+            <span class="nav-link" style="font-size: 0.8rem; color: #64748b;"><i class="bi bi-tag me-1"></i> v{{ local_version }}</span>
             <span class="nav-link"><i class="bi bi-person-circle me-1"></i> {{ current_user.username }}</span>
             {% if current_user.is_admin %}
             <span class="badge-admin"><i class="bi bi-shield-check me-1"></i> مدير</span>
@@ -87,6 +96,29 @@
         {% endfor %}
       {% endif %}
     {% endwith %}
+
+    {% if current_user.is_admin and update_available %}
+    <div class="alert alert-dismissible fade show mb-4" role="alert"
+         style="background: linear-gradient(135deg, rgba(34,197,94,0.12), rgba(34,197,94,0.03)); border: 1px solid rgba(34,197,94,0.3); color: #e2e8f0; border-radius: 14px;">
+        <div class="d-flex align-items-center justify-content-between">
+            <div class="d-flex align-items-center gap-3">
+                <div style="width: 42px; height: 42px; border-radius: 12px; background: rgba(34,197,94,0.2); display: flex; align-items: center; justify-content: center;">
+                    <i class="bi bi-cloud-arrow-up-fill" style="color: #22c55e; font-size: 1.2rem;"></i>
+                </div>
+                <div>
+                    <strong style="color: #22c55e;">تحديث جديد متاح!</strong>
+                    <div class="small" style="color: #94a3b8;">الإصدار {{ remote_version }} جاهز - أنت تستخدم الإصدار {{ local_version }}</div>
+                </div>
+            </div>
+            <div class="d-flex gap-2">
+                <a href="{{ url_for('admin_update_page') }}" class="btn btn-sm" style="background: linear-gradient(135deg, #22c55e, #16a34a); color: #fff; border-radius: 8px; font-weight: 600;">
+                    <i class="bi bi-arrow-up-circle me-1"></i> تحديث الآن
+                </a>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+        </div>
+    </div>
+    {% endif %}
 
     {% if current_user.is_authenticated %}
     <div class="d-flex justify-content-between align-items-center mb-4">
